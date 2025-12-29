@@ -1,0 +1,42 @@
+---
+- name: Scan disk space and send report to Discord
+  hosts: all
+  gather_facts: false
+  become: false
+
+  vars:
+    discord_webhook_url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
+
+  tasks:
+    - name: Fail if DISCORD_WEBHOOK_URL is not set
+      ansible.builtin.fail:
+        msg: "DISCORD_WEBHOOK_URL environment variable is not set"
+      when: discord_webhook_url is not defined or discord_webhook_url | length == 0
+
+    - name: Get disk usage
+      ansible.builtin.command: >
+        df -h --output=source,size,used,avail,pcent,target
+      register: disk_output
+      changed_when: false
+
+    - name: Build disk report message
+      ansible.builtin.set_fact:
+        discord_message: |
+          📊 **Disk Space Report**
+          🖥️ Host: **{{ inventory_hostname }}**
+
+          ```
+          {{ disk_output.stdout }}
+          ```
+
+    - name: Send disk report to Discord
+      delegate_to: localhost
+      ansible.builtin.uri:
+        url: "{{ discord_webhook_url }}"
+        method: POST
+        headers:
+          Content-Type: application/json
+        body_format: json
+        body:
+          content: "{{ discord_message }}"
+        status_code: 204

@@ -21,7 +21,7 @@
         host_name: "{{ hostname_out.stdout }}"
         root_disk_usage: "{{ disk_usage.stdout | int }}"
 
-- name: Send HTML table report to Discord
+- name: Send aggregated disk report to Discord (Embed)
   hosts: localhost
   gather_facts: false
 
@@ -38,36 +38,22 @@
         msg: "DISCORD_WEBHOOK_URL environment variable is not set"
       when: discord_webhook_url is not defined or discord_webhook_url | length == 0
 
-    - name: Build HTML table report
+    - name: Build embed fields
       ansible.builtin.set_fact:
-        discord_message: |
-          📊 <b>Disk Usage Report (/)</b><br><br>
-          <table border="1" cellpadding="5" cellspacing="0">
-            <tr>
-              <th>Hostname</th>
-              <th>IP</th>
-              <th>Disk Usage (%)</th>
-              <th>Status</th>
-            </tr>
+        embed_fields: |
+          [
           {% for host in groups['all'] %}
-          {% set usage = hostvars[host].root_disk_usage | default(-1) %}
-          {% set name = hostvars[host].host_name | default(host) %}
-            <tr>
-              <td>{{ name }}</td>
-              <td>{{ host }}</td>
-              <td>{{ usage }}%</td>
-              <td>
-                {% if usage >= disk_threshold %}
-                🔴 HIGH
-                {% else %}
-                🟢 OK
-                {% endif %}
-              </td>
-            </tr>
+            {% set usage = hostvars[host].root_disk_usage | default(-1) %}
+            {% set name = hostvars[host].host_name | default(host) %}
+            {
+              "name": "{{ name }} ({{ host }})",
+              "value": "{% if usage >= disk_threshold %}🔴 HIGH{% else %}🟢 OK{% endif %} — {{ usage }}%",
+              "inline": false
+            }{% if not loop.last %},{% endif %}
           {% endfor %}
-          </table>
+          ]
 
-    - name: Send report to Discord
+    - name: Send embed report to Discord
       ansible.builtin.uri:
         url: "{{ discord_webhook_url }}"
         method: POST
@@ -75,5 +61,8 @@
           Content-Type: application/json
         body_format: json
         body:
-          content: "{{ discord_message }}"
+          embeds:
+            - title: "📊 Disk Usage Summary (/)"
+              color: 15158332   # red
+              fields: "{{ embed_fields | from_yaml }}"
         status_code: 204

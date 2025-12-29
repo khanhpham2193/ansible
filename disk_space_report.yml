@@ -1,11 +1,29 @@
 ---
-- name: Scan disk space and send report to Discord
+- name: Collect disk usage from all hosts
   hosts: all
   gather_facts: false
   become: false
 
+  tasks:
+    - name: Get root disk usage percentage
+      ansible.builtin.shell: |
+        df -h / | awk 'NR==2 {gsub("%",""); print $5}'
+      register: disk_usage
+      changed_when: false
+
+    - name: Save disk usage fact
+      ansible.builtin.set_fact:
+        root_disk_usage: "{{ disk_usage.stdout | int }}"
+
+- name: Send aggregated disk report to Discord
+  hosts: localhost
+  gather_facts: false
+
   vars:
     discord_webhook_url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
+
+  environment:
+    PYTHONWARNINGS: "ignore"
 
   tasks:
     - name: Fail if DISCORD_WEBHOOK_URL is not set
@@ -13,24 +31,20 @@
         msg: "DISCORD_WEBHOOK_URL environment variable is not set"
       when: discord_webhook_url is not defined or discord_webhook_url | length == 0
 
-    - name: Get disk usage
-      ansible.builtin.command: >
-        df -h --output=source,size,used,avail,pcent,target
-      register: disk_output
-      changed_when: false
-
-    - name: Build disk report message
+    - name: Build aggregated disk usage report
       ansible.builtin.set_fact:
         discord_message: |
-          📊 **Disk Space Report**
-          🖥️ Host: **{{ inventory_hostname }}**
+          📊 **Disk Usage Summary (/)**
+          {% for host in groups['all'] %}
+          {% set usage = hostvars[host].root_disk_usage | default(-1) %}
+          {% if usage >= 80 %}
+          🔴 **{{ host }}** : {{ usage }}%
+          {% else %}
+          🟢 {{ host }} : {{ usage }}%
+          {% endif %}
+          {% endfor %}
 
-          ```
-          {{ disk_output.stdout }}
-          ```
-
-    - name: Send disk report to Discord
-      delegate_to: localhost
+    - name: Send aggregated report to Discord
       ansible.builtin.uri:
         url: "{{ discord_webhook_url }}"
         method: POST

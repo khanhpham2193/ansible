@@ -63,36 +63,36 @@
       loop_control:
         loop_var: nvme
       block:
-        - name: Check NVMe exists
-          stat:
-            path: "/dev/{{ nvme }}"
-          register: nvme_stat
+      - name: Check NVMe exists
+        stat:
+          path: "/dev/{{ nvme }}"
+        register: nvme_stat
 
-        - name: Collect NVMe info
-          when: nvme_stat.stat.exists
-          block:
-            - command: smartctl -i /dev/{{ nvme }}
-              register: nvme_info
-              changed_when: false
+      - name: Collect NVMe info
+        when: nvme_stat.stat.exists
+        block:
+        - command: smartctl -i /dev/{{ nvme }}
+          register: nvme_info
+          changed_when: false
 
-            - command: smartctl -a /dev/{{ nvme }}
-              register: nvme_attr
-              changed_when: false
+        - command: smartctl -a /dev/{{ nvme }}
+          register: nvme_attr
+          changed_when: false
 
-            - name: Append NVMe report
-              set_fact:
-                disk_reports: "{{ disk_reports + [ nvme_report ] }}"
-              vars:
-                used_pct: "{{ nvme_attr.stdout | regex_search('Percentage Used:\\s*(\\d+)', '\\1') | default('0') | int }}"
-                nvme_report: |
-                  **NVMe {{ nvme }}**
-                  Model: {{ nvme_info.stdout | regex_search('Model Number:\\s*(.*)', '\\1') | default('Unknown') }}
-                  Serial: {{ nvme_info.stdout | regex_search('Serial Number:\\s*(.*)', '\\1') | default('Unknown') }}
-                  Wearout Remaining: {{ 100 - used_pct }}%
-
-        - name: Append NVMe not found
-          when: not nvme_stat.stat.exists
+        - name: Append NVMe report
           set_fact:
+            disk_reports: "{{ disk_reports + [ nvme_report ] }}"
+          vars:
+            used_pct: "{{ nvme_attr.stdout | regex_search('Percentage Used:\\s*(\\d+)', '\\1') | default('0') | int }}"
+            nvme_report: |
+              **NVMe {{ nvme }}**
+              Model: {{ nvme_info.stdout | regex_search('Model Number:\\s*(.*)', '\\1') | default('Unknown') }}
+              Serial: {{ nvme_info.stdout | regex_search('Serial Number:\\s*(.*)', '\\1') | default('Unknown') }}
+              Wearout Remaining: {{ 100 - used_pct }}%
+
+      - name: Append NVMe not found
+        when: not nvme_stat.stat.exists
+        set_fact:
             disk_reports: "{{ disk_reports + [ '**NVMe ' ~ nvme ~ '**\nDevice not found.' ] }}"
 
     ####################

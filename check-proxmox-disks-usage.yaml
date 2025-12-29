@@ -1,9 +1,10 @@
-- name: SSD Wearout Report to Discord
+- name: SSD Wearout Report
   hosts: all
   gather_facts: false
   become: true
 
   vars:
+    discord_webhook_url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
     sata_device: /dev/sdh
     nvme_devices:
       - nvme0n1
@@ -14,56 +15,50 @@
     PYTHONWARNINGS: "ignore"
 
   tasks:
+    - name: Init disk report list
+      set_fact:
+        disk_reports: []
+
+    ####################
+    # SATA SSD
+    ####################
     - name: Check SATA device exists
       stat:
         path: "{{ sata_device }}"
       register: sata_stat
 
-    - name: Get SATA SSD info
+    - name: Collect SATA SSD info
       when: sata_stat.stat.exists
       block:
-        - name: Read SATA SSD info
-          shell: |
-            smartctl -i {{ sata_device }}
+        - name: Read SATA info
+          command: smartctl -i {{ sata_device }}
           register: sata_info
           changed_when: false
 
         - name: Read SATA wearout
-          shell: |
-            smartctl -A {{ sata_device }} | awk '/Media_Wearout_Indicator/ {print $4}'
-          register: sata_wear
+          command: smartctl -A {{ sata_device }}
+          register: sata_attr
           changed_when: false
 
-        - name: Send SATA report to Discord
-          ansible.builtin.uri:
-            url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
-            method: POST
-            headers:
-              Content-Type: application/json
-            body_format: json
-            body:
-              content: >-
-                The wearout percentage of
-                **{{ sata_info.stdout | regex_search('Device Model:\\s*(.*)', '\\1') | default('Unknown') }}**.
-                Serial:
-                **{{ sata_info.stdout | regex_search('Serial Number:\\s*(.*)', '\\1') | default('Unknown') }}**.
-                Wearout Remaining:
-                **{{ sata_wear.stdout | default('Unavailable') }}%**.
-            status_code: 204
+        - name: Append SATA report
+          set_fact:
+            disk_reports: "{{ disk_reports + [ sata_report ] }}"
+          vars:
+            sata_report: |
+              **SATA SSD**
+              Model: {{ sata_info.stdout | regex_search('Device Model:\\s*(.*)', '\\1') | default('Unknown') }}
+              Serial: {{ sata_info.stdout | regex_search('Serial Number:\\s*(.*)', '\\1') | default('Unknown') }}
+              Wearout Remaining: {{ sata_attr.stdout | regex_search('Media_Wearout_Indicator\\s+\\S+\\s+\\S+\\s+(\\d+)', '\\1') | default('Unavailable') }}%
 
-    - name: Send SATA not found message
+    - name: Append SATA not found
       when: not sata_stat.stat.exists
-      ansible.builtin.uri:
-        url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
-        method: POST
-        headers:
-          Content-Type: application/json
-        body_format: json
-        body:
-          content: "Device {{ sata_device }} not found."
-        status_code: 204
+      set_fact:
+        disk_reports: "{{ disk_reports + [ '**SATA SSD**\nDevice not found.' ] }}"
 
-    - name: Check NVMe devices
+    ####################
+    # NVMe SSDs
+    ####################
+    - name: Process NVMe devices
       loop: "{{ nvme_devices }}"
       loop_control:
         loop_var: nvme
@@ -73,46 +68,47 @@
             path: "/dev/{{ nvme }}"
           register: nvme_stat
 
-        - name: Read NVMe info
+        - name: Collect NVMe info
           when: nvme_stat.stat.exists
-          shell: |
-            smartctl -i /dev/{{ nvme }}
-          register: nvme_info
-          changed_when: false
+          block:
+            - command: smartctl -i /dev/{{ nvme }}
+              register: nvme_info
+              changed_when: false
 
-        - name: Read NVMe wear data
-          when: nvme_stat.stat.exists
-          shell: |
-            smartctl -a /dev/{{ nvme }} | awk '/Percentage Used:/ {print $3}' | tr -d '%'
-          register: nvme_used
-          changed_when: false
+            - command: smartctl -a /dev/{{ nvme }}
+              register: nvme_attr
+              changed_when: false
 
-        - name: Send NVMe report to Discord
-          when: nvme_stat.stat.exists
-          ansible.builtin.uri:
-            url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
-            method: POST
-            headers:
-              Content-Type: application/json
-            body_format: json
-            body:
-              content: >-
-                The wearout percentage of
-                **{{ nvme_info.stdout | regex_search('Model Number:\\s*(.*)', '\\1') | default('Unknown') }}**.
-                Serial:
-                **{{ nvme_info.stdout | regex_search('Serial Number:\\s*(.*)', '\\1') | default('Unknown') }}**.
-                Wearout Remaining:
-                **{{ 100 - (nvme_used.stdout | int) }}%**.
-            status_code: 204
+            - name: Append NVMe report
+              set_fact:
+                disk_reports: "{{ disk_reports + [ nvme_report ] }}"
+              vars:
+                used_pct: "{{ nvme_attr.stdout | regex_search('Percentage Used:\\s*(\\d+)', '\\1') | default('0') | int }}"
+                nvme_report: |
+                  **NVMe {{ nvme }}**
+                  Model: {{ nvme_info.stdout | regex_search('Model Number:\\s*(.*)', '\\1') | default('Unknown') }}
+                  Serial: {{ nvme_info.stdout | regex_search('Serial Number:\\s*(.*)', '\\1') | default('Unknown') }}
+                  Wearout Remaining: {{ 100 - used_pct }}%
 
-        - name: Send NVMe not found message
+        - name: Append NVMe not found
           when: not nvme_stat.stat.exists
-          ansible.builtin.uri:
-            url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
-            method: POST
-            headers:
-              Content-Type: application/json
-            body_format: json
-            body:
-              content: "Device /dev/{{ nvme }} not found."
-            status_code: 204
+          set_fact:
+            disk_reports: "{{ disk_reports + [ '**NVMe ' ~ nvme ~ '**\nDevice not found.' ] }}"
+
+    ####################
+    # Send Discord message (1 per host)
+    ####################
+    - name: Send SSD wearout report to Discord
+      ansible.builtin.uri:
+        url: "{{ discord_webhook_url }}"
+        method: POST
+        headers:
+          Content-Type: application/json
+        body_format: json
+        body:
+          content: |
+            🖥️ **SSD Wearout Report**
+            Host: **{{ inventory_hostname }}**
+
+            {{ disk_reports | join('\n\n') }}
+      status_code: 204

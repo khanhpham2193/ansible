@@ -1,27 +1,4 @@
----
-- name: Collect disk usage and hostname
-  hosts: all
-  gather_facts: false
-  become: false
-
-  tasks:
-    - name: Get hostname
-      ansible.builtin.command: hostname
-      register: hostname_out
-      changed_when: false
-
-    - name: Get root disk usage percentage
-      ansible.builtin.shell: |
-        df -h / | awk 'NR==2 {gsub("%",""); print $5}'
-      register: disk_usage
-      changed_when: false
-
-    - name: Save host facts
-      ansible.builtin.set_fact:
-        host_name: "{{ hostname_out.stdout }}"
-        root_disk_usage: "{{ disk_usage.stdout | int }}"
-
-- name: Send aggregated disk report to Discord (Embed)
+- name: Send aggregated disk report to Discord (Table-style Embed)
   hosts: localhost
   gather_facts: false
 
@@ -33,27 +10,26 @@
     PYTHONWARNINGS: "ignore"
 
   tasks:
-    - name: Fail if DISCORD_WEBHOOK_URL is not set
-      ansible.builtin.fail:
-        msg: "DISCORD_WEBHOOK_URL environment variable is not set"
-      when: discord_webhook_url is not defined or discord_webhook_url | length == 0
-
-    - name: Build embed fields
-      ansible.builtin.set_fact:
-        embed_fields: |
-          [
-          {% for host in groups['all'] %}
-            {% set usage = hostvars[host].root_disk_usage | default(-1) %}
-            {% set name = hostvars[host].host_name | default(host) %}
-            {
-              "name": "{{ name }} ({{ host }})",
-              "value": "{% if usage >= disk_threshold %}🔴 HIGH{% else %}🟢 OK{% endif %} — {{ usage }}%",
-              "inline": false
-            }{% if not loop.last %},{% endif %}
+    - name: Build table columns
+      set_fact:
+        col_hostname: |
+          {% for h in groups['all'] %}
+          {{ hostvars[h].host_name | default(h) }}
           {% endfor %}
-          ]
+        col_ip: |
+          {% for h in groups['all'] %}
+          {{ h }}
+          {% endfor %}
+        col_disk: |
+          {% for h in groups['all'] %}
+          {{ hostvars[h].root_disk_usage }}%
+          {% endfor %}
+        col_status: |
+          {% for h in groups['all'] %}
+          {% if hostvars[h].root_disk_usage >= disk_threshold %}🔴 HIGH{% else %}🟢 OK{% endif %}
+          {% endfor %}
 
-    - name: Send embed report to Discord
+    - name: Send table-style embed
       ansible.builtin.uri:
         url: "{{ discord_webhook_url }}"
         method: POST
@@ -63,6 +39,18 @@
         body:
           embeds:
             - title: "📊 Disk Usage Summary (/)"
-              color: 15158332   # red
-              fields: "{{ embed_fields | from_yaml }}"
+              color: 15158332
+              fields:
+                - name: "Hostname"
+                  value: "{{ col_hostname }}"
+                  inline: true
+                - name: "IP"
+                  value: "{{ col_ip }}"
+                  inline: true
+                - name: "Disk %"
+                  value: "{{ col_disk }}"
+                  inline: true
+                - name: "Status"
+                  value: "{{ col_status }}"
+                  inline: true
         status_code: 204

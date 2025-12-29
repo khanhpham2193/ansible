@@ -1,18 +1,24 @@
 ---
-- name: Collect disk usage from all hosts
+- name: Collect disk usage and hostname from all hosts
   hosts: all
   gather_facts: false
   become: false
 
   tasks:
+    - name: Get hostname
+      ansible.builtin.command: hostname
+      register: hostname_out
+      changed_when: false
+
     - name: Get root disk usage percentage
       ansible.builtin.shell: |
         df -h / | awk 'NR==2 {gsub("%",""); print $5}'
       register: disk_usage
       changed_when: false
 
-    - name: Save disk usage fact
+    - name: Save host facts
       ansible.builtin.set_fact:
+        host_name: "{{ hostname_out.stdout }}"
         root_disk_usage: "{{ disk_usage.stdout | int }}"
 
 - name: Send aggregated disk report to Discord
@@ -37,10 +43,11 @@
           📊 **Disk Usage Summary (/)**
           {% for host in groups['all'] %}
           {% set usage = hostvars[host].root_disk_usage | default(-1) %}
+          {% set name = hostvars[host].host_name | default(host) %}
           {% if usage >= 80 %}
-          🔴 **{{ host }}** : {{ usage }}%
+          🔴 **{{ name }} ({{ host }})** : {{ usage }}%
           {% else %}
-          🟢 {{ host }} : {{ usage }}%
+          🟢 {{ name }} ({{ host }}) : {{ usage }}%
           {% endif %}
           {% endfor %}
 

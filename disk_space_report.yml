@@ -10,17 +10,19 @@
     PYTHONWARNINGS: "ignore"
 
   tasks:
-    - name: Build list of hosts over threshold
+    - name: Init high disk host list
       set_fact:
-        high_disk_hosts: >-
-          {{
-            groups['all']
-            | selectattr('root_disk_usage', 'defined')
-            | select(lambda h: hostvars[h].root_disk_usage | int >= disk_threshold)
-            | list
-          }}
+        high_disk_hosts: []
 
-    - name: Build alert message for high disk usage
+    - name: Collect hosts over disk threshold
+      set_fact:
+        high_disk_hosts: "{{ high_disk_hosts + [item] }}"
+      loop: "{{ groups['all'] }}"
+      when:
+        - hostvars[item].root_disk_usage is defined
+        - hostvars[item].root_disk_usage | int >= disk_threshold
+
+    - name: Build alert message
       set_fact:
         alert_message: |
           🚨 **Disk Usage Alert (>= {{ disk_threshold }}%)**
@@ -30,7 +32,7 @@
             Disk: {{ hostvars[h].root_disk_usage }}%
           {% endfor %}
 
-    - name: Send "no issue" message if all hosts are OK
+    - name: Send OK message if no host exceeds threshold
       ansible.builtin.uri:
         url: "{{ discord_webhook_url }}"
         method: POST
@@ -42,7 +44,7 @@
         status_code: 204
       when: high_disk_hosts | length == 0
 
-    - name: Send alert message if there are hosts over threshold
+    - name: Send alert message if disk issue detected
       ansible.builtin.uri:
         url: "{{ discord_webhook_url }}"
         method: POST
